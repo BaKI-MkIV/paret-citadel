@@ -1,0 +1,11 @@
+{
+  "activities": ["A", "B", "C", "D", "E", "F"],
+  "data": {
+    "A": {"predecessors": [], "duration": 8, "crash_duration": 5, "cost_normal": 1200, "cost_crash": 1800},
+    "B": {"predecessors": ["A"], "duration": 10, "crash_duration": 6, "cost_normal": 1500, "cost_crash": 2400},
+    "C": {"predecessors": ["A"], "duration": 7, "crash_duration": 4, "cost_normal": 900, "cost_crash": 1500},
+    "D": {"predecessors": ["B"], "duration": 9, "crash_duration": 5, "cost_normal": 1800, "cost_crash": 2700},
+    "E": {"predecessors": ["C"], "duration": 12, "crash_duration": 8, "cost_normal": 2000, "cost_crash": 3200},
+    "F": {"predecessors": ["D", "E"], "duration": 6, "crash_duration": 3, "cost_normal": 1100, "cost_crash": 2000}
+  }
+}
