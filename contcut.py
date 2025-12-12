@@ -6,341 +6,544 @@ import json
 import networkx as nx
 from networkx.algorithms.dag import topological_sort
 
-class NetworkOptimizer:
+
+class NetworkAnalyzer:
     def __init__(self, root):
         self.root = root
-        self.root.title("Оптимизация сетевого графика по сокращению длительности")
-        self.root.geometry("1300x800")
+        self.root.title("Сетевые графики: Критический путь и оптимизация по стоимости")
+        self.root.geometry("1400x900")
 
-        self.activities = []  # список имен активностей
-        self.data = {}  # {act: {'normal_time': float, 'crash_time': float, 'normal_cost': float, 'crash_cost_per_day': float, 'predecessors': []}}
-        self.graph = nx.DiGraph()  # Для моделирования зависимостей
+        # activities: порядок отображения (список имён)
+        self.activities = []
+        # data: словарь по работе
+        # { act: {
+        #     'predecessors': [...],
+        #     'duration': float,
+        #     'crash_duration': float,
+        #     'cost_normal': float,
+        #     'cost_crash': float,
+        #     'max_crash_days': float,
+        #     'slope': float
+        # } }
+        self.data = {}
+        self.graph = nx.DiGraph()
 
         self.setup_ui()
-        self.update_table()
 
     def setup_ui(self):
-        top_frame = ttk.Frame(self.root)
-        top_frame.pack(fill="x", padx=10, pady=10)
+        top = ttk.Frame(self.root)
+        top.pack(fill="x", padx=10, pady=10)
 
-        # Добавление активности
-        ttk.Label(top_frame, text="Активность:").grid(row=0, column=0, padx=5, sticky="e")
-        self.act_entry = ttk.Entry(top_frame, width=25)
+        ttk.Label(top, text="Работа:").grid(row=0, column=0, padx=5, sticky="e")
+        self.act_entry = ttk.Entry(top, width=15)
         self.act_entry.grid(row=0, column=1, padx=5)
         self.act_entry.bind("<Return>", lambda e: self.add_activity())
-        ttk.Button(top_frame, text="Добавить", command=self.add_activity).grid(row=0, column=2, padx=5)
 
-        # Поле для целевой длительности
-        ttk.Label(top_frame, text="Целевая длительность:").grid(row=0, column=3, padx=20, sticky="e")
-        self.target_duration_entry = ttk.Entry(top_frame, width=10)
-        self.target_duration_entry.insert(0, "0")
-        self.target_duration_entry.grid(row=0, column=4, padx=5)
+        ttk.Button(top, text="Добавить работу", command=self.add_activity).grid(row=0, column=2, padx=5)
+        ttk.Button(top, text="Загрузить JSON", command=self.load_json).grid(row=0, column=5, padx=10)
+        ttk.Button(top, text="Рассчитать критический путь", command=self.calculate_cp).grid(row=0, column=6, padx=10)
+        ttk.Button(top, text="Оптимизировать по стоимости", command=self.optimize_cost, style="Accent.TButton").grid(row=0, column=7, padx=20)
 
-        # Кнопки
-        ttk.Button(top_frame, text="Загрузить JSON", command=self.load_json).grid(row=0, column=5, padx=10)
-        ttk.Button(top_frame, text="Оптимизировать график", command=self.optimize_network, style="Accent.TButton").grid(row=0, column=6, padx=20)
+        ttk.Label(top, text="Целевая длительность:").grid(row=1, column=0, padx=5, sticky="e")
+        self.target_entry = ttk.Entry(top, width=10)
+        self.target_entry.grid(row=1, column=1, padx=5, sticky="w")
 
-        # Таблица данных
+        # Таблица
         table_frame = ttk.Frame(self.root)
         table_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        cols = ("act", "predecessors", "normal_time", "crash_time", "normal_cost", "crash_cost_per_day")
-        self.tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=15)
-        self.tree.heading("act", text="Активность")
-        self.tree.heading("predecessors", text="Предшественники")
-        self.tree.heading("normal_time", text="Норм. время")
-        self.tree.heading("crash_time", text="Мин. время")
-        self.tree.heading("normal_cost", text="Норм. стоимость")
-        self.tree.heading("crash_cost_per_day", text="Доп. стоим./день")
-        for col in cols:
-            self.tree.column(col, width=150, anchor="center")
+        cols = ("act", "pred", "dur", "cost_n", "cost_c", "crash_days", "slope")
+        self.tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=18)
+        headings = ["Работа", "Предш.", "Длительность", "Ст-ть норм.", "Ст-ть ускор.", "Макс. ускорение", "Цена/день"]
+        for c, h in zip(cols, headings):
+            self.tree.heading(c, text=h)
+            self.tree.column(c, width=120, anchor="center")
+        self.tree.column("act", width=140, anchor="w")
 
-        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
-        hsb = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
-        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-        table_frame.grid_rowconfigure(0, weight=1)
-        table_frame.grid_columnconfigure(0, weight=1)
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
 
-        self.tree.bind("<Double-1>", self.on_double_click)
-        self.tree.bind("<Button-3>", self.show_context_menu)
-
-        # Контекстное меню
-        self.context_menu = tk.Menu(self.root, tearoff=0)
-        self.context_menu.add_command(label="Переименовать активность", command=self.rename_activity)
-        self.context_menu.add_command(label="Изменить предшественников", command=self.change_predecessors)
-        self.context_menu.add_command(label="Удалить активность", command=self.delete_activity)
+        self.tree.bind("<Double-1>", self.edit_cell)
+        self.tree.bind("<Button-3>", self.context_menu)
 
         # Результаты
-        result_frame = ttk.LabelFrame(self.root, text="Результаты оптимизации")
-        result_frame.pack(fill="x", padx=10, pady=10)
+        result_frame = ttk.LabelFrame(self.root, text="Результаты расчёта")
+        result_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-        self.result_text = tk.Text(result_frame, height=10, wrap="word")
+        self.result_text = tk.Text(result_frame, height=20, font=("Consolas", 10))
         self.result_text.pack(fill="both", expand=True, padx=5, pady=5)
 
+        # Контекстное меню
+        self.menu = tk.Menu(self.root, tearoff=0)
+        self.menu.add_command(label="Удалить работу", command=self.delete_activity)
+        self.menu.add_command(label="Изменить предшественников", command=self.change_predecessors)
+
         style = ttk.Style()
-        style.configure("Accent.TButton", foreground="white", background="#0078D7")
+        # Accent.TButton may not exist on all platforms; safe configure
+        try:
+            style.configure("Accent.TButton", foreground="white", background="#0078D7")
+        except Exception:
+            pass
 
     def add_activity(self):
         name = self.act_entry.get().strip()
-        if not name or name in self.activities:
-            messagebox.showwarning("Ошибка", "Имя пустое или уже существует")
+        if not name:
+            messagebox.showwarning("Ошибка", "Имя пустое")
             return
-        preds_str = simpledialog.askstring("Предшественники", "Предшественники (через запятую):")
-        preds = [p.strip() for p in preds_str.split(",") if p.strip() and p.strip() in self.activities] if preds_str else []
+        if name in self.activities:
+            messagebox.showwarning("Ошибка", "Имя уже существует")
+            return
+
+        preds_str = simpledialog.askstring("Предшественники", "Через запятую (пусто — стартовая):")
+        preds = []
+        if preds_str:
+            preds = [p.strip() for p in preds_str.split(",") if p.strip()]
+            # оставить только те предшественники, которые уже существуют
+            preds = [p for p in preds if p in self.activities]
+
+        dur = simpledialog.askfloat("Длительность", "Нормальная длительность (дни):", minvalue=0.01)
+        if dur is None:
+            return
+        cost_n = simpledialog.askfloat("Стоимость", "Стоимость при нормальной длительности:", minvalue=0.0)
+        if cost_n is None:
+            return
+        crash_dur = simpledialog.askfloat("Ускорение", "Минимальная длительность (≤ нормальной):", minvalue=0.0, maxvalue=dur)
+        if crash_dur is None:
+            return
+        cost_c = simpledialog.askfloat("Стоимость ускоренная", "Стоимость при ускорении (общая стоимость):", minvalue=cost_n)
+        if cost_c is None:
+            return
+
+        if crash_dur >= dur:
+            messagebox.showerror("Ошибка", "Минимальная длительность должна быть меньше нормальной!")
+            return
+
+        crash_days = dur - crash_dur
+        slope = (cost_c - cost_n) / crash_days if crash_days > 0 else float('inf')
+
         self.activities.append(name)
         self.data[name] = {
-            'normal_time': 0.0,
-            'crash_time': 0.0,
-            'normal_cost': 0.0,
-            'crash_cost_per_day': 0.0,
-            'predecessors': preds
+            'predecessors': preds,
+            'duration': float(dur),
+            'crash_duration': float(crash_dur),
+            'cost_normal': float(cost_n),
+            'cost_crash': float(cost_c),
+            'max_crash_days': float(crash_days),
+            'slope': float(slope)
         }
         self.graph.add_node(name)
-        for pred in preds:
-            self.graph.add_edge(pred, name)
+        for p in preds:
+            self.graph.add_edge(p, name)
+
         if not nx.is_directed_acyclic_graph(self.graph):
-            messagebox.showerror("Ошибка", "Добавление создает цикл в графе!")
-            self.graph.remove_node(name)
+            messagebox.showerror("Ошибка", "Создаётся цикл! Добавление отменено.")
+            # удалить добавленное
             self.activities.remove(name)
-            self.data.pop(name)
+            self.data.pop(name, None)
+            self.graph.remove_node(name)
             return
-        self.act_entry.delete(0, "end")
+
+        self.act_entry.delete(0, tk.END)
         self.update_table()
 
-    def load_json(self):
-        file_path = filedialog.askopenfilename(filetypes=[("JSON files", "*.json")])
-        if not file_path:
-            return
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                loaded = json.load(f)
-            existing_acts = set(self.activities)
-            for act in loaded.get('activities', []):
-                if act not in existing_acts:
-                    self.activities.append(act)
-                    self.data[act] = loaded['data'][act]
-                    self.graph.add_node(act)
-            for act, info in loaded.get('data', {}).items():
-                preds = info['predecessors']
-                for pred in preds:
-                    if pred in self.activities and act in self.activities:
-                        self.graph.add_edge(pred, act)
-            if not nx.is_directed_acyclic_graph(self.graph):
-                messagebox.showerror("Ошибка", "Загруженный граф содержит цикл!")
-                # Откат
-                for act in loaded.get('activities', []):
-                    if act not in existing_acts:
-                        self.activities.remove(act)
-                        self.data.pop(act)
-                        self.graph.remove_node(act)
-                return
-            self.update_table()
-
-            # --- Вот исправление: подставляем текущую длительность проекта ---
-            current_times = {act: info['normal_time'] for act, info in self.data.items()}
-            project_duration, _, _, _ = self.calculate_critical_path(current_times)
-            self.target_duration_entry.delete(0, tk.END)
-            self.target_duration_entry.insert(0, str(project_duration))  # автоматически ставим текущую длительность
-
-            messagebox.showinfo("Успех", "JSON загружен")
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось загрузить: {str(e)}")
-
     def update_table(self):
-        self.tree.delete(*self.tree.get_children())
+        for i in self.tree.get_children():
+            self.tree.delete(i)
         for act in self.activities:
-            info = self.data[act]
-            preds = ", ".join(info['predecessors'])
-            values = (act, preds, info['normal_time'], info['crash_time'], info['normal_cost'], info['crash_cost_per_day'])
-            self.tree.insert("", "end", iid=act, values=values)
+            d = self.data[act]
+            self.tree.insert("", "end", iid=act, values=(
+                act,
+                ", ".join(d['predecessors']) if d['predecessors'] else "—",
+                f"{d['duration']:.2f}",
+                f"{d['cost_normal']:.2f}",
+                f"{d['cost_crash']:.2f}",
+                f"{d['max_crash_days']:.2f}",
+                f"{d['slope']:.2f}" if d['slope'] != float('inf') else "∞"
+            ))
 
-    def on_double_click(self, event):
-        item_id = self.tree.identify_row(event.y)
+    def edit_cell(self, event):
+        item = self.tree.identify_row(event.y)
         column = self.tree.identify_column(event.x)
-        if not item_id or column == "#1" or column == "#2":  # act or predecessors
+        if not item or column == "#1":  # запрещаем редактировать название прямо
             return
 
-        col_map = {"#3": "normal_time", "#4": "crash_time", "#5": "normal_cost", "#6": "crash_cost_per_day"}
-        if column not in col_map:
+        col_idx = int(column[1:]) - 1
+        # Маппинг столбцов на ключи в self.data
+        keys = [None, None, 'duration', 'cost_normal', 'cost_crash', None, None]
+        key = keys[col_idx]
+        if not key:
             return
 
-        key = col_map[column]
-        act_name = item_id
-
-        x, y, width, height = self.tree.bbox(item_id, column)
+        x, y, w, h = self.tree.bbox(item, column)
         entry = ttk.Entry(self.tree)
-        entry.insert(0, self.data[act_name][key])
-        entry.select_range(0, "end")
+        entry.place(x=x, y=y, width=w, height=h)
+        entry.insert(0, str(self.data[item][key]))
         entry.focus()
 
-        def save_edit(event=None):
+        def save(event=None):
             try:
-                value = float(entry.get())
-                if value < 0:
-                    raise ValueError("Значение не может быть отрицательным")
-                if key == "crash_time" and value > self.data[act_name]['normal_time']:
-                    raise ValueError("Минимальное время не может превышать нормальное")
-                if key == "crash_cost_per_day" and value < 0:
-                    raise ValueError("Дополнительная стоимость не может быть отрицательной")
-                self.data[act_name][key] = value
+                val = float(entry.get())
+                if val < 0:
+                    raise ValueError
+                if key == 'duration':
+                    # Нормальная длительность не может быть меньше crash_duration
+                    if val <= self.data[item]['crash_duration']:
+                        messagebox.showerror("Ошибка", "Нормальная длительность не может быть меньше или равна ускоренной.")
+                        entry.destroy()
+                        return
+                    self.data[item]['duration'] = val
+                    # пересчитать max_crash_days
+                    self.data[item]['max_crash_days'] = self.data[item]['duration'] - self.data[item]['crash_duration']
+                elif key == 'cost_normal':
+                    # cost_normal не должен быть больше cost_crash
+                    if val > self.data[item]['cost_crash']:
+                        messagebox.showerror("Ошибка", "Нормальная стоимость не может быть больше ускоренной.")
+                        entry.destroy()
+                        return
+                    self.data[item]['cost_normal'] = val
+                elif key == 'cost_crash':
+                    if val < self.data[item]['cost_normal']:
+                        messagebox.showerror("Ошибка", "Ускоренная стоимость не может быть меньше нормальной.")
+                        entry.destroy()
+                        return
+                    self.data[item]['cost_crash'] = val
+
+                # пересчитать наклон (slope)
+                crash_days = self.data[item]['duration'] - self.data[item]['crash_duration']
+                self.data[item]['slope'] = (self.data[item]['cost_crash'] - self.data[item]['cost_normal']) / crash_days if crash_days > 0 else float('inf')
+
                 self.update_table()
-            except ValueError as e:
-                messagebox.showerror("Ошибка", str(e))
-            entry.destroy()
+            except Exception:
+                # тихо игнорируем неверный ввод
+                pass
+            finally:
+                entry.destroy()
 
-        entry.bind("<Return>", save_edit)
-        entry.bind("<FocusOut>", save_edit)
-        entry.place(x=x, y=y, width=width, height=height)
+        entry.bind("<Return>", save)
+        entry.bind("<FocusOut>", save)
 
-    def show_context_menu(self, event):
+    def context_menu(self, event):
         item = self.tree.identify_row(event.y)
         if item:
             self.tree.selection_set(item)
-            self.context_menu.tk_popup(event.x_root, event.y_root)
-
-    def rename_activity(self):
-        item = self.tree.selection()
-        if not item:
-            return
-        old_name = item[0]
-        new_name = simpledialog.askstring("Переименование", "Новое название:", initialvalue=old_name)
-        if new_name and new_name != old_name and new_name not in self.activities:
-            # Обновляем данные и граф
-            self.activities[self.activities.index(old_name)] = new_name
-            self.data[new_name] = self.data.pop(old_name)
-            self.graph = nx.relabel_nodes(self.graph, {old_name: new_name})
-            # Обновляем предшественников в других активностях
-            for act in self.activities:
-                preds = self.data[act]['predecessors']
-                if old_name in preds:
-                    preds[preds.index(old_name)] = new_name
-            self.update_table()
-
-    def change_predecessors(self):
-        item = self.tree.selection()
-        if not item:
-            return
-        act = item[0]
-        preds_str = simpledialog.askstring("Предшественники", "Новые предшественники (через запятую):", initialvalue=", ".join(self.data[act]['predecessors']))
-        new_preds = [p.strip() for p in preds_str.split(",") if p.strip() and p.strip() in self.activities] if preds_str else []
-        # Удаляем старые edges
-        for pred in self.data[act]['predecessors']:
-            self.graph.remove_edge(pred, act)
-        # Добавляем новые
-        for pred in new_preds:
-            self.graph.add_edge(pred, act)
-        if not nx.is_directed_acyclic_graph(self.graph):
-            messagebox.showerror("Ошибка", "Изменение создает цикл в графе!")
-            # Откат
-            for pred in new_preds:
-                self.graph.remove_edge(pred, act)
-            for pred in self.data[act]['predecessors']:
-                self.graph.add_edge(pred, act)
-            return
-        self.data[act]['predecessors'] = new_preds
-        self.update_table()
+            try:
+                self.menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self.menu.grab_release()
 
     def delete_activity(self):
-        item = self.tree.selection()
-        if not item:
+        sel = self.tree.selection()
+        if not sel:
             return
-        act = item[0]
-        if messagebox.askyesno("Удалить", f"Удалить активность «{act}»?"):
+        act = sel[0]
+        if not messagebox.askyesno("Удалить", f"Удалить работу {act}?"):
+            return
+
+        # удаляем работу
+        if act in self.activities:
             self.activities.remove(act)
-            self.data.pop(act, None)
+        self.data.pop(act, None)
+        if self.graph.has_node(act):
             self.graph.remove_node(act)
-            # Удаляем ссылки в предшественниках других
-            for other in self.activities:
-                preds = self.data[other]['predecessors']
-                if act in preds:
-                    preds.remove(act)
-            self.update_table()
+
+        # убираем из предшественников у остальных
+        for a in list(self.activities):
+            if act in self.data.get(a, {}).get('predecessors', []):
+                self.data[a]['predecessors'].remove(act)
+                # удалить ребро если есть
+                if self.graph.has_edge(act, a):
+                    self.graph.remove_edge(act, a)
+
+        self.update_table()
+
+    def change_predecessors(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        act = sel[0]
+        cur = ", ".join(self.data[act]['predecessors'])
+        prompt = f"Предшественники для {act} (через запятую):"
+        new = simpledialog.askstring("Предшественники", prompt, initialvalue=cur)
+        if new is None:
+            return
+        new_preds = [p.strip() for p in new.split(",") if p.strip() in self.activities]
+
+        # Сохраним старые значения на случай отката
+        old_preds = list(self.data[act]['predecessors'])
+        old_edges = []
+        for p in old_preds:
+            if self.graph.has_edge(p, act):
+                old_edges.append((p, act))
+
+        # Удаляем старые рёбра
+        for p in old_preds:
+            if self.graph.has_edge(p, act):
+                self.graph.remove_edge(p, act)
+
+        # Применяем новые предшественники
+        self.data[act]['predecessors'] = new_preds
+        for p in new_preds:
+            self.graph.add_edge(p, act)
+
+        # Проверка на цикл
+        if not nx.is_directed_acyclic_graph(self.graph):
+            messagebox.showerror("Ошибка", "Цикл! Изменение предшественников откатывается.")
+            # Откат
+            for p in new_preds:
+                if self.graph.has_edge(p, act):
+                    self.graph.remove_edge(p, act)
+            self.data[act]['predecessors'] = old_preds
+            for (p, a) in old_edges:
+                self.graph.add_edge(p, a)
+            return
+
+        self.update_table()
+
+    def calculate_cp(self):
+        """
+        Рассчитывает критический путь на основании текущих данных self.data (использует нормальные длительности).
+        Выводит результат в self.result_text и устанавливает target_entry равной длительности проекта.
+        """
+        if not self.activities:
+            messagebox.showinfo("Инфо", "Нет работ для расчёта")
+            return
+
+        # times: используем текущие нормальные длительности
+        times = {a: self.data[a]['duration'] for a in self.activities}
+
+        project_duration, critical, es, ef, ls, lf = self.calculate_critical_path(times)
+
+        # Резервы
+        total_float = {}
+        free_float = {}
+
+        for act in self.activities:
+            total_float[act] = ls[act] - es[act]
+            # свободный резерв: min ES следующего - EF этого
+            succs = list(self.graph.successors(act))
+            succ_es = min([es[s] for s in succs], default=project_duration)
+            free_float[act] = succ_es - ef[act]
+
+        # Вывод
+        self.result_text.delete(1.0, tk.END)
+        self.result_text.insert(tk.END, "РАСЧЁТ КРИТИЧЕСКОГО ПУТИ\n")
+        self.result_text.insert(tk.END, f"{'='*60}\n")
+        self.result_text.insert(tk.END, f"Длительность проекта: {project_duration:.2f} дней\n")
+        self.result_text.insert(tk.END, f"Критический путь ({len(critical)} работ): {' → '.join(critical)}\n\n")
+
+        self.result_text.insert(tk.END, f"{'Работа':<12} {'ES':>6} {'EF':>6} {'LS':>6} {'LF':>6} {'Общ.рез.':>10} {'Своб.рез.':>10}\n")
+        self.result_text.insert(tk.END, "-"*80 + "\n")
+        for act in self.activities:
+            star = " ← КРИТИЧ." if act in critical else ""
+            self.result_text.insert(tk.END,
+                                    f"{act:<12} {es[act]:>6.2f} {ef[act]:>6.2f} {ls[act]:>6.2f} {lf[act]:>6.2f} "
+                                    f"{total_float[act]:>10.2f} {free_float[act]:>10.2f}{star}\n")
+
+        # Автоматически подставляем текущую длительность
+        self.target_entry.delete(0, tk.END)
+        self.target_entry.insert(0, f"{project_duration:.2f}")
+
+        # Для внешнего использования возвращаем данные
+        return project_duration, critical, es, ef, ls, lf
 
     def calculate_critical_path(self, times):
-        earliest = {}
+        """
+        Универсальный расчёт КП для данного словаря times: {act: duration}.
+        Возвращает: project_duration, critical_list (по порядку топологической сортировки), ES, EF, LS, LF
+        """
+        # Прямой проход (ES, EF)
+        es = {}
+        ef = {}
         for act in topological_sort(self.graph):
             preds = self.data[act]['predecessors']
-            earliest[act] = max(earliest.get(pred, 0) + times.get(pred, 0) for pred in preds) if preds else 0
+            if not preds:
+                es[act] = 0.0
+            else:
+                es[act] = max([ef.get(p, 0.0) for p in preds])
+            dur = float(times.get(act, self.data[act]['duration']))
+            ef[act] = es[act] + dur
 
-        end_nodes = [n for n in self.graph.nodes if self.graph.out_degree(n) == 0]
-        project_duration = max(earliest.get(act, 0) + times.get(act, 0) for act in self.graph.nodes)
+        project_duration = max(ef.values()) if ef else 0.0
 
-        latest = {}
-        for act in end_nodes:
-            latest[act] = project_duration - times.get(act, 0)
-
+        # Обратный проход (LS, LF)
+        lf = {}
+        ls = {}
         for act in reversed(list(topological_sort(self.graph))):
             succs = list(self.graph.successors(act))
-            if succs:
-                latest[act] = min(latest.get(succ, project_duration) - times.get(succ, 0) for succ in succs)
+            if not succs:
+                lf[act] = project_duration
+            else:
+                lf[act] = min([ls.get(s, project_duration) for s in succs])
+            dur = float(times.get(act, self.data[act]['duration']))
+            ls[act] = lf[act] - dur
 
-        critical_path = [act for act in self.activities if earliest.get(act, 0) == latest.get(act, 0)]
-        return project_duration, critical_path, earliest, latest
+        # Критичность: EF == LF (с погрешностью)
+        critical = [act for act in self.activities if abs(ef[act] - lf[act]) < 1e-6]
 
-    def optimize_network(self):
+        return project_duration, critical, es, ef, ls, lf
+
+    def optimize_cost(self):
+        """
+        Итеративный crashing: на каждом шаге определяем текущий критический путь (по текущим durations),
+        среди его работ выбираем ту, у которой минимальный slope и есть запас для ускорения, ускоряем её на 1 день
+        (или на оставшуюся разницу до target если меньше 1), повторяем, пока не достигнем целевой длительности
+        или не исчерпаем возможности ускорения.
+        """
+        if not self.activities:
+            messagebox.showinfo("Инфо", "Нет работ для оптимизации")
+            return
+
         try:
-            target_duration = float(self.target_duration_entry.get())
-            if target_duration <= 0:
-                raise ValueError
-        except:
-            messagebox.showerror("Ошибка", "Целевая длительность должна быть положительной")
+            target = float(self.target_entry.get())
+        except Exception:
+            messagebox.showerror("Ошибка", "Введите корректную целевую длительность")
             return
 
-        if not nx.is_directed_acyclic_graph(self.graph):
-            messagebox.showerror("Ошибка", "Граф содержит цикл!")
+        # Начальные durations — копия нормальных длительностей
+        current_duration = {a: float(self.data[a]['duration']) for a in self.activities}
+
+        # Исходная длительность проекта:
+        initial_proj_duration, _, _, _, _, _ = self.calculate_critical_path(current_duration)
+        initial_cost = sum(self.data[a]['cost_normal'] for a in self.activities)
+
+        if target >= initial_proj_duration - 1e-9:
+            messagebox.showinfo("Инфо", "Цель уже достигнута или больше текущей длительности")
             return
 
-        # Инициализация текущих времен и стоимостей
-        current_times = {act: info['normal_time'] for act, info in self.data.items()}
-        current_costs = sum(info['normal_cost'] for info in self.data.values())
-
-        project_duration, critical_path, _, _ = self.calculate_critical_path(current_times)
-
-        if project_duration <= target_duration:
-            self.result_text.delete(1.0, tk.END)
-            self.result_text.insert(tk.END, f"Текущая длительность {project_duration} уже меньше или равна цели {target_duration}.\nОбщие затраты: {current_costs}")
-            return
-
+        total_cost = initial_cost
         steps = []
-        while project_duration > target_duration:
-            # Вычисляем slope для критических активностей
-            candidates = []
-            for act in critical_path:
-                info = self.data[act]
-                if current_times[act] > info['crash_time']:
-                    max_reduce = current_times[act] - info['crash_time']
-                    slope = info['crash_cost_per_day']
-                    candidates.append((slope, act, min(1.0, max_reduce)))  # По 1, или меньше если осталось мало
 
-            if not candidates:
-                break  # Невозможно дальше сокращать
+        # Будем ускорять шагами по 1 дню (с учётом возможной дробности на последнем шаге)
+        max_iterations = 10000  # предохранитель от бесконечного цикла
+        it = 0
+        current_project_duration = initial_proj_duration
 
-            # Выбираем с минимальным slope
-            candidates.sort()
-            _, act, reduce = candidates[0]
+        while current_project_duration > target + 1e-9 and it < max_iterations:
+            it += 1
+            # ← ВОТ ЭТА СТРОКА САМАЯ ВАЖНАЯ:
+            current_project_duration, cp, es, ef, ls, lf = self.calculate_critical_path(current_duration)
+            if not cp:
+                break
 
-            # Ускоряем
-            current_times[act] -= reduce
-            additional_cost = reduce * self.data[act]['crash_cost_per_day']
-            current_costs += additional_cost
+            # Найти на критическом пути работу с минимальным slope и с запасом для уменьшения
+            best_act = None
+            best_slope = float('inf')
+            for act in cp:
+                max_reduce = current_duration[act] - self.data[act]['crash_duration']
+                if max_reduce > 1e-9:
+                    slope = self.data[act]['slope']
+                    # Дополнительная проверка: slope может быть inf (нельзя ускорять экономически)
+                    if slope < best_slope:
+                        best_slope = slope
+                        best_act = act
 
-            # Пересчитываем
-            project_duration, critical_path, _, _ = self.calculate_critical_path(current_times)
+            if best_act is None:
+                # Невозможно дальше ускорять
+                break
 
-            steps.append(f"Ускорить {act} на {reduce} день (стоимость {additional_cost}). Новая длительность: {project_duration}")
+            # Сколько нужно сократить до target
+            need = current_project_duration - target
+            # Сколько можно сократить у выбранной работы
+            possible_reduce = current_duration[best_act] - self.data[best_act]['crash_duration']
+            # Сделаем шаг: 1.0 день или остаток need или possible_reduce — что меньше
+            step = min(1.0, possible_reduce, need)
+            # Для случаев, когда need < 1 и possible_reduce >= need, сократим на need (дробный шаг)
+            # иначе сокращаем на 1 день
+            if step <= 0:
+                break
 
-        self.result_text.delete(1.0, tk.END)
-        if project_duration > target_duration:
-            self.result_text.insert(tk.END, f"Невозможно сократить до цели. Минимальная длительность: {project_duration}\n")
+            current_duration[best_act] -= step
+            cost_increase = step * best_slope
+            total_cost += cost_increase
+            current_project_duration -= step
+            steps.append(f"Ускорить {best_act} на {step:.2f} дн. (цена {best_slope:.2f}/день, +{cost_increase:.2f} у.е.)")
+
+        # Вывод результата
+        self.result_text.insert(tk.END, "\n\nОПТИМИЗАЦИЯ ПО СТОИМОСТИ (crashing)\n")
+        self.result_text.insert(tk.END, "="*60 + "\n")
+        if current_project_duration > target + 1e-6:
+            self.result_text.insert(tk.END, f"Невозможно достичь цели {target:.2f} дней.\n")
+            self.result_text.insert(tk.END, f"Минимально возможная длительность: {current_project_duration:.2f} дней\n")
         else:
-            self.result_text.insert(tk.END, "Оптимизация завершена.\n")
-        self.result_text.insert(tk.END, f"Финальная длительность: {project_duration}\nОбщие затраты: {current_costs}\n\nШаги:\n" + "\n".join(steps))
+            self.result_text.insert(tk.END, f"Цель {target:.2f} дней достигнута!\n")
 
-# Запуск
+        self.result_text.insert(tk.END, f"Исходная общая стоимость: {initial_cost:.2f} у.е.\n")
+        self.result_text.insert(tk.END, f"Общая стоимость после оптимизации: {total_cost:.2f} у.е.\n")
+        self.result_text.insert(tk.END, f"Дополнительные затраты: {total_cost - initial_cost:.2f} у.е.\n\n")
+        if steps:
+            self.result_text.insert(tk.END, "Шаги оптимизации:\n" + "\n".join(steps) + "\n")
+        else:
+            self.result_text.insert(tk.END, "Шаги оптимизации отсутствуют — ускорение невозможно.\n")
+
+        # Финальный критический путь по обновлённым durations
+        final_proj_duration, final_cp, _, _, _, _ = self.calculate_critical_path(current_duration)
+        self.result_text.insert(tk.END, f"\nФинальный критический путь: {' → '.join(final_cp)} = {final_proj_duration:.2f} дней\n")
+
+    def load_json(self):
+        path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
+        if not path:
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                d = json.load(f)
+
+            # Проверяем структуру
+            activities = d.get('activities') if isinstance(d, dict) else None
+            data = d.get('data') if isinstance(d, dict) else None
+            if not isinstance(activities, list) or not isinstance(data, dict):
+                raise ValueError("Некорректный формат JSON. Требуются ключи 'activities' (list) и 'data' (dict).")
+
+            # Очистка текущих данных
+            self.activities = []
+            self.data = {}
+            self.graph.clear()
+
+            a_set = set(activities)
+            # Сначала добавим все узлы
+            for act in activities:
+                self.activities.append(act)
+                info = data.get(act)
+                if not info:
+                    raise ValueError(f"Нет данных для работы {act} в 'data'.")
+                # Приведение типов и валидация
+                preds = info.get('predecessors', [])
+                dur = float(info.get('duration'))
+                crash_dur = float(info.get('crash_duration'))
+                cost_n = float(info.get('cost_normal'))
+                cost_c = float(info.get('cost_crash'))
+                if crash_dur >= dur:
+                    raise ValueError(f"Для работы {act}: crash_duration должен быть меньше duration.")
+                crash_days = dur - crash_dur
+                slope = (cost_c - cost_n) / crash_days if crash_days > 0 else float('inf')
+                self.data[act] = {
+                    'predecessors': [p for p in preds if p in a_set],
+                    'duration': dur,
+                    'crash_duration': crash_dur,
+                    'cost_normal': cost_n,
+                    'cost_crash': cost_c,
+                    'max_crash_days': crash_days,
+                    'slope': slope
+                }
+                self.graph.add_node(act)
+
+            # Добавим рёбра
+            for act, info in self.data.items():
+                for p in info['predecessors']:
+                    if p in a_set:
+                        self.graph.add_edge(p, act)
+
+            if not nx.is_directed_acyclic_graph(self.graph):
+                raise ValueError("Загруженный граф содержит цикл.")
+
+            self.update_table()
+            messagebox.showinfo("OK", "Загружено")
+        except Exception as e:
+            messagebox.showerror("Ошибка при загрузке JSON", str(e))
+
+
 if __name__ == "__main__":
     root = tk.Tk()
-    app = NetworkOptimizer(root)
+    app = NetworkAnalyzer(root)
     root.mainloop()
