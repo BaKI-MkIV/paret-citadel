@@ -1,0 +1,10 @@
+{
+  "projects": ["X", "Y", "Z"],
+  "wins_favorable": [460000, 450000, 350000],
+  "wins_unfavorable": [250000, -85000, -80000],
+  "probs_favorable_base": [0.51, 0.67, 0.98],
+  "research_cost": 50000,
+  "p_forecast_favorable": 0.52,
+  "p_fav_given_forecast_fav": 0.71,
+  "p_fav_given_forecast_unfav": 0.31
+}

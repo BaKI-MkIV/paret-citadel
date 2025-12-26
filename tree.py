@@ -1,298 +1,231 @@
-# -*- coding: utf-8 -*-
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
 import json
 import networkx as nx
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
 
-class DecisionTreeApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Дерево решений — EMV")
-        self.root.geometry("1200x800")
+# Функция для загрузки данных из JSON
+def load_data():
+    try:
+        with open('data.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            print("Данные успешно загружены из файла 'data.json'.")
+            return data
+    except FileNotFoundError:
+        print("Файл 'data.json' не найден. Использую встроенные (hardcoded) данные.")
+        # Hardcoded JSON как fallback
+        data_json = '''
+        {
+          "projects": ["X", "Y", "Z"],
+          "wins_favorable": [460000, 450000, 350000],
+          "wins_unfavorable": [250000, -85000, -80000],
+          "probs_favorable_base": [0.51, 0.67, 0.98],
+          "research_cost": 50000,
+          "p_forecast_favorable": 0.52,
+          "p_fav_given_forecast_fav": 0.71,
+          "p_fav_given_forecast_unfav": 0.31
+        }
+        '''
+        return json.loads(data_json)
+    except json.JSONDecodeError:
+        print("Ошибка в формате JSON в файле 'data.json'. Использую встроенные данные.")
+        return json.loads(data_json)  # fallback
 
-        self.G = nx.DiGraph()
-        self.node_counter = 0
+# Загружаем данные
+data = load_data()
 
-        self.setup_ui()
-        self.draw_tree()
+# Извлекаем параметры
+projects = data["projects"]
+wins_fav = data["wins_favorable"]
+wins_unfav = data["wins_unfavorable"]
+probs_fav_base = data["probs_favorable_base"]
+cost = data["research_cost"]
+p_forecast_fav = data["p_forecast_favorable"]
+p_fav_given_fav = data["p_fav_given_forecast_fav"]
+p_fav_given_unfav = data["p_fav_given_forecast_unfav"]
+p_forecast_unfav = 1 - p_forecast_fav
+p_unfav_given_fav = 1 - p_fav_given_fav
+p_unfav_given_unfav = 1 - p_fav_given_unfav
 
-    def setup_ui(self):
-        top = ttk.Frame(self.root)
-        top.pack(fill="x", padx=8, pady=8)
+# Функция для расчёта ОДО
+def calculate_odo(w_fav, w_unfav, p_fav):
+    return p_fav * w_fav + (1 - p_fav) * w_unfav
 
-        ttk.Button(top, text="Новое дерево", command=self.new_tree).pack(side="left", padx=4)
-        ttk.Button(top, text="Добавить решение", command=self.add_decision_node).pack(side="left", padx=4)
-        ttk.Button(top, text="Добавить событие", command=self.add_chance_node).pack(side="left", padx=4)
-        ttk.Button(top, text="Добавить ребро", command=self.add_edge_dialog).pack(side="left", padx=4)
-        ttk.Button(top, text="Удалить узел", command=self.delete_selected_node).pack(side="left", padx=4)
-        ttk.Button(top, text="Рассчитать EMV", command=self.calculate_emv).pack(side="left", padx=10)
-        ttk.Button(top, text="Сохранить JSON", command=self.save_json).pack(side="right", padx=4)
-        ttk.Button(top, text="Загрузить JSON", command=self.load_json).pack(side="right", padx=4)
+# Базовые ОДО без исследования
+odos_base = [calculate_odo(wins_fav[i], wins_unfav[i], probs_fav_base[i]) for i in range(3)]
+best_base_idx = odos_base.index(max(odos_base))
+best_base_odo = odos_base[best_base_idx]
+best_base_project = projects[best_base_idx]
 
-        main = ttk.Frame(self.root)
-        main.pack(fill="both", expand=True, padx=8, pady=8)
+# ОДО при благоприятном прогнозе
+odos_fav_forecast = [calculate_odo(wins_fav[i], wins_unfav[i], p_fav_given_fav) for i in range(3)]
+max_fav_idx = odos_fav_forecast.index(max(odos_fav_forecast))
+max_fav_odo = odos_fav_forecast[max_fav_idx]
+max_fav_project = projects[max_fav_idx]
 
-        left = ttk.LabelFrame(main, text="Узлы (select для ред.)")
-        left.pack(side="left", fill="y", padx=6, pady=6)
+# ОДО при неблагоприятном прогнозе
+odos_unfav_forecast = [calculate_odo(wins_fav[i], wins_unfav[i], p_fav_given_unfav) for i in range(3)]
+max_unfav_idx = odos_unfav_forecast.index(max(odos_unfav_forecast))
+max_unfav_odo = odos_unfav_forecast[max_unfav_idx]
+max_unfav_project = projects[max_unfav_idx]
 
-        self.node_listbox = tk.Listbox(left, width=36, height=24)
-        self.node_listbox.pack(side="top", fill="y", padx=4, pady=4)
-        self.node_listbox.bind("<<ListboxSelect>>", self.on_node_select)
+# Общая ОДО с исследованием
+odo_with_research = p_forecast_fav * max_fav_odo + p_forecast_unfav * max_unfav_odo
+odo_net = odo_with_research - cost
 
-        edit = ttk.LabelFrame(main, text="Редактирование узла")
-        edit.pack(side="left", fill="y", padx=6, pady=6)
+# Определяем, выгоднее ли исследование
+if odo_net > best_base_odo:
+    best_option = "Проводить исследование"
+    best_value = odo_net
+else:
+    best_option = "Не проводить исследование"
+    best_value = best_base_odo
 
-        ttk.Label(edit, text="ID (readonly):").pack(anchor="w", padx=6, pady=(6,2))
-        self.id_label = ttk.Label(edit, text="")
-        self.id_label.pack(anchor="w", padx=6)
+# Вывод расчётов (для обоснования)
+print("Базовые ОДО:")
+for i, proj in enumerate(projects):
+    print(f"{proj}: {odos_base[i]}")
+print(f"Лучший без исследования: {best_base_project} с {best_base_odo}\n")
 
-        ttk.Label(edit, text="Название:").pack(anchor="w", padx=6, pady=(6,2))
-        self.name_entry = ttk.Entry(edit, width=30)
-        self.name_entry.pack(padx=6, pady=2)
+print("ОДО при благоприятном прогнозе:")
+for i, proj in enumerate(projects):
+    print(f"{proj}: {odos_fav_forecast[i]}")
+print(f"Max: {max_fav_odo} ({max_fav_project})\n")
 
-        ttk.Label(edit, text="Тип узла:").pack(anchor="w", padx=6, pady=(6,2))
-        self.type_var = tk.StringVar(value="decision")
-        ttk.Radiobutton(edit, text="Решение", variable=self.type_var, value="decision").pack(anchor="w", padx=12)
-        ttk.Radiobutton(edit, text="Событие", variable=self.type_var, value="chance").pack(anchor="w", padx=12)
+print("ОДО при неблагоприятном прогнозе:")
+for i, proj in enumerate(projects):
+    print(f"{proj}: {odos_unfav_forecast[i]}")
+print(f"Max: {max_unfav_odo} ({max_unfav_project})\n")
 
-        ttk.Label(edit, text="Значение (число):").pack(anchor="w", padx=6, pady=(6,2))
-        self.value_entry = ttk.Entry(edit, width=30)
-        self.value_entry.pack(padx=6, pady=2)
+print(f"ОДО с исследованием: {odo_with_research}")
+print(f"Net ОДО: {odo_net}")
+print(f"Наиболее выгодный вариант: {best_option} с значением {best_value}")
 
-        ttk.Button(edit, text="Сохранить изменения", command=self.update_selected_node).pack(pady=10, padx=6)
+# Теперь строим дерево с вычисленными значениями
+G = nx.DiGraph()
 
-        right = ttk.Frame(main)
-        right.pack(side="left", fill="both", expand=True, padx=6, pady=6)
+# Узлы с метками (динамические значения)
+nodes = {
+    "Start": "Начало\n(Выбор: исследование?)",
+    "Research": f"Проводить исследование\n(-{cost})",
+    "NoResearch": "Не проводить\nисследование",
+    "ForecastFav": f"Прогноз благоприятный\n{p_forecast_fav}",
+    "ForecastUnfav": f"Прогноз неблагоприятный\n{p_forecast_unfav}",
+    "MaxFav": f"max = {max_fav_odo}\n(Выбрать {max_fav_project})",
+    "MaxUnfav": f"max = {max_unfav_odo}\n(Выбрать {max_unfav_project})",
+    "Total": f"ОДО = {odo_with_research}\nNet = {odo_net}",
+    "BestNoRes": f"max = {best_base_odo}\n(Выбрать {best_base_project})",
+}
 
-        self.fig = Figure(figsize=(7,6), dpi=100)
-        self.canvas = FigureCanvasTkAgg(self.fig, right)
-        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+# Добавляем узлы проектов
+for i, proj in enumerate(projects):
+    nodes[f"Fav{proj}"] = f"{proj}\n{odos_fav_forecast[i]}{' *' if i == max_fav_idx else ''}"
+    nodes[f"Unfav{proj}"] = f"{proj}\n{odos_unfav_forecast[i]}{' *' if i == max_unfav_idx else ''}"
+    nodes[f"No{proj}"] = f"{proj}\n{odos_base[i]}{' *' if i == best_base_idx else ''}"
 
-    # ---------- CRUD ----------
-    def new_tree(self):
-        if messagebox.askyesno("Подтвердите", "Очистить текущее дерево?"):
-            self.G.clear()
-            self.node_counter = 0
-            self.refresh_node_list()
-            self.draw_tree()
+for node, label in nodes.items():
+    G.add_node(node, label=label)
 
-    def add_decision_node(self):
-        nid = f"D_{self.node_counter}"
-        self.node_counter += 1
-        label = f"Decision {nid}"
-        self.G.add_node(nid, label=label, type="decision", value=0.0)
-        self.refresh_node_list()
-        self.draw_tree()
+# Ребра (динамические цвета: красный для оптимального пути)
+research_color = "red" if odo_net > best_base_odo else "black"
+no_research_color = "red" if odo_net <= best_base_odo else "black"
 
-    def add_chance_node(self):
-        nid = f"C_{self.node_counter}"
-        self.node_counter += 1
-        label = f"Chance {nid}"
-        self.G.add_node(nid, label=label, type="chance", value=0.0)
-        self.refresh_node_list()
-        self.draw_tree()
+forecast_fav_color = "red" if odo_net > best_base_odo else "black"
+forecast_unfav_color = "black"  # Обычно не оптимальный, но если нужно, можно скорректировать
 
-    def delete_selected_node(self):
-        nid = self.get_selected_node_id()
-        if not nid: return
-        if messagebox.askyesno("Подтвердите", f"Удалить узел {nid}?"):
-            self.G.remove_node(nid)
-            self.refresh_node_list()
-            self.draw_tree()
+edges = [
+    ("Start", "Research", {"label": f"Проводить (-{cost})", "color": research_color, "fontcolor": research_color}),
+    ("Start", "NoResearch", {"label": "Не проводить", "color": no_research_color, "fontcolor": no_research_color}),
 
-    def add_edge_dialog(self):
-        parent = self.get_selected_node_id()
-        if not parent:
-            messagebox.showinfo("Добавить ребро", "Сначала выберите узел-родитель")
-            return
-        target = simpledialog.askstring("Добавить ребро", "Введите ID дочернего узла:", parent=self.root)
-        if not target or target not in self.G.nodes:
-            messagebox.showerror("Ошибка", "Такого узла нет")
-            return
-        prob = None
-        if self.G.nodes[parent].get('type') == 'chance':
-            prob = simpledialog.askfloat("Вероятность", "Введите вероятность для ребра (0..1):", parent=self.root, minvalue=0.0, maxvalue=1.0)
-            if prob is None: return
-        self.G.add_edge(parent, target, prob=prob)
-        self.draw_tree()
+    ("Research", "ForecastFav",
+     {"label": f"{p_forecast_fav}", "color": forecast_fav_color, "fontcolor": forecast_fav_color}),
+    ("Research", "ForecastUnfav", {"label": f"{p_forecast_unfav}", "color": "black"}),
 
-    def refresh_node_list(self):
-        self.node_listbox.delete(0, tk.END)
-        for nid in self.G.nodes:
-            n = self.G.nodes[nid]
-            label = n.get('label', '')
-            t = n.get('type', '')
-            self.node_listbox.insert(tk.END, f"{nid} — {label} ({t})")
+    ("ForecastFav", f"Fav{projects[0]}",
+     {"label": f"{p_fav_given_fav} / {p_unfav_given_fav}", "color": "red" if 0 == max_fav_idx else "gray",
+      "fontcolor": "red" if 0 == max_fav_idx else "black"}),
+    ("ForecastFav", f"Fav{projects[1]}",
+     {"label": f"{p_fav_given_fav} / {p_unfav_given_fav}", "color": "red" if 1 == max_fav_idx else "gray",
+      "fontcolor": "red" if 1 == max_fav_idx else "black"}),
+    ("ForecastFav", f"Fav{projects[2]}",
+     {"label": f"{p_fav_given_fav} / {p_unfav_given_fav}", "color": "red" if 2 == max_fav_idx else "gray",
+      "fontcolor": "red" if 2 == max_fav_idx else "black"}),
 
-    def get_selected_node_id(self):
-        sel = self.node_listbox.curselection()
-        if not sel: return None
-        text = self.node_listbox.get(sel[0])
-        return text.split(" — ")[0].strip() if " — " in text else text.strip()
+    ("ForecastUnfav", f"Unfav{projects[0]}",
+     {"label": f"{p_fav_given_unfav} / {p_unfav_given_unfav}", "color": "red" if 0 == max_unfav_idx else "gray",
+      "fontcolor": "red" if 0 == max_unfav_idx else "black"}),
+    ("ForecastUnfav", f"Unfav{projects[1]}",
+     {"label": f"{p_fav_given_unfav} / {p_unfav_given_unfav}", "color": "red" if 1 == max_unfav_idx else "gray",
+      "fontcolor": "red" if 1 == max_unfav_idx else "black"}),
+    ("ForecastUnfav", f"Unfav{projects[2]}",
+     {"label": f"{p_fav_given_unfav} / {p_unfav_given_unfav}", "color": "red" if 2 == max_unfav_idx else "gray",
+      "fontcolor": "red" if 2 == max_unfav_idx else "black"}),
 
-    def on_node_select(self, event):
-        nid = self.get_selected_node_id()
-        if not nid or nid not in self.G.nodes: return
-        data = self.G.nodes[nid]
-        self.id_label.config(text=nid)
-        self.name_entry.delete(0, tk.END)
-        self.name_entry.insert(0, data.get('label', ''))
-        self.type_var.set(data.get('type', 'decision'))
-        self.value_entry.delete(0, tk.END)
-        self.value_entry.insert(0, str(data.get('value', 0.0)))
+    (f"Fav{projects[0]}", "MaxFav", {"label": "", "color": "red" if 0 == max_fav_idx else "gray"}),
+    (f"Fav{projects[1]}", "MaxFav", {"label": "", "color": "red" if 1 == max_fav_idx else "gray"}),
+    (f"Fav{projects[2]}", "MaxFav", {"label": "", "color": "red" if 2 == max_fav_idx else "gray"}),
 
-    def update_selected_node(self):
-        nid = self.get_selected_node_id()
-        if not nid: return
-        try:
-            label = self.name_entry.get().strip() or nid
-            ntype = self.type_var.get()
-            val = float(self.value_entry.get())
-            self.G.nodes[nid].update({'label': label, 'type': ntype, 'value': val})
-            self.refresh_node_list()
-            self.draw_tree()
-        except:
-            messagebox.showerror("Ошибка", "Неверное значение")
+    (f"Unfav{projects[0]}", "MaxUnfav", {"label": "", "color": "red" if 0 == max_unfav_idx else "gray"}),
+    (f"Unfav{projects[1]}", "MaxUnfav", {"label": "", "color": "red" if 1 == max_unfav_idx else "gray"}),
+    (f"Unfav{projects[2]}", "MaxUnfav", {"label": "", "color": "red" if 2 == max_unfav_idx else "gray"}),
 
-    # ---------- EMV ----------
-    def calculate_emv(self):
-        if not self.G.nodes:
-            messagebox.showinfo("EMV", "Дерево пусто")
-            return
-        try:
-            topo = list(nx.topological_sort(self.G))
-        except nx.NetworkXUnfeasible:
-            messagebox.showerror("Ошибка", "Граф содержит циклы")
-            return
+    ("MaxFav", "Total", {"label": "", "color": "red"}),
+    ("MaxUnfav", "Total", {"label": "", "color": "black"}),
 
-        emv = {}
-        best_child = {}
-        for node in reversed(topo):
-            ntype = self.G.nodes[node].get('type')
-            children = list(self.G.successors(node))
-            if not children:
-                emv[node] = self.G.nodes[node].get('value', 0.0)
-                continue
-            if ntype == 'chance':
-                total = 0.0
-                for child in children:
-                    prob = self.G.edges[node, child].get('prob', 0.0)
-                    total += prob * emv.get(child, self.G.nodes[child].get('value',0.0))
-                emv[node] = total
-            else:  # decision
-                child_emvs = [emv.get(c, self.G.nodes[c].get('value',0.0)) for c in children]
-                best_idx = int(max(range(len(child_emvs)), key=lambda i: child_emvs[i]))
-                best_child[node] = children[best_idx]
-                emv[node] = child_emvs[best_idx]
+    ("NoResearch", f"No{projects[0]}",
+     {"label": f"{probs_fav_base[0]} / {1 - probs_fav_base[0]}", "color": "red" if 0 == best_base_idx else "gray",
+      "fontcolor": "red" if 0 == best_base_idx else "black"}),
+    ("NoResearch", f"No{projects[1]}",
+     {"label": f"{probs_fav_base[1]} / {1 - probs_fav_base[1]}", "color": "red" if 1 == best_base_idx else "gray",
+      "fontcolor": "red" if 1 == best_base_idx else "black"}),
+    ("NoResearch", f"No{projects[2]}",
+     {"label": f"{probs_fav_base[2]} / {1 - probs_fav_base[2]}", "color": "red" if 2 == best_base_idx else "gray",
+      "fontcolor": "red" if 2 == best_base_idx else "black"}),
 
-        roots = [n for n in topo if self.G.in_degree(n)==0]
-        text = "\n".join([f"{r}: EMV={emv.get(r,0.0):.2f}" for r in roots])
-        messagebox.showinfo("EMV результат", text)
-        self.draw_tree(highlight_edges=[(u,v) for u,v in best_child.items()])
+    (f"No{projects[0]}", "BestNoRes", {"label": "", "color": "red" if 0 == best_base_idx else "gray"}),
+    (f"No{projects[1]}", "BestNoRes", {"label": "", "color": "red" if 1 == best_base_idx else "gray"}),
+    (f"No{projects[2]}", "BestNoRes", {"label": "", "color": "red" if 2 == best_base_idx else "gray"}),
+]
 
-    # ---------- Draw ----------
-    def draw_tree(self, highlight_edges=None):
-        highlight_edges = highlight_edges or []
-        self.fig.clear()
-        ax = self.fig.add_subplot(111)
-        ax.clear()
-        ax.set_axis_off()
-        if not self.G.nodes:
-            self.canvas.draw()
-            return
-        pos = nx.spring_layout(self.G, seed=42, k=1.5, iterations=50)
-        decision_nodes = [n for n in self.G.nodes if self.G.nodes[n].get('type')=='decision']
-        chance_nodes = [n for n in self.G.nodes if self.G.nodes[n].get('type')=='chance']
+for u, v, d in edges:
+    G.add_edge(u, v, **d)
 
-        nx.draw_networkx_nodes(self.G, pos, nodelist=decision_nodes, node_color='lightblue', node_shape='s', node_size=1600, edgecolors='black')
-        nx.draw_networkx_nodes(self.G, pos, nodelist=chance_nodes, node_color='lightgreen', node_shape='o', node_size=1400, edgecolors='black')
+# Позиционирование (адаптировано для 3 проектов)
+pos = {
+    "Start": (0, 10),
+    "Research": (3, 15),
+    "NoResearch": (3, 5),
+    "ForecastFav": (6, 18),
+    "ForecastUnfav": (6, 12),
+    "BestNoRes": (6, 5),
+    f"Fav{projects[0]}": (9, 20),
+    f"Fav{projects[1]}": (9, 18),
+    f"Fav{projects[2]}": (9, 16),
+    f"Unfav{projects[0]}": (9, 13),
+    f"Unfav{projects[1]}": (9, 11),
+    f"Unfav{projects[2]}": (9, 9),
+    f"No{projects[0]}": (9, 6),
+    f"No{projects[1]}": (9, 4),
+    f"No{projects[2]}": (9, 2),
+    "MaxFav": (12, 18),
+    "MaxUnfav": (12, 12),
+    "Total": (15, 15),
+}
 
-        nx.draw_networkx_edges(self.G, pos, alpha=0.4, arrows=True, arrowsize=12, width=1.2)
-        if highlight_edges:
-            nx.draw_networkx_edges(self.G, pos, edgelist=highlight_edges, edge_color='red', width=3, arrowsize=14)
+# Рисование
+plt.figure(figsize=(18, 12))
 
-        labels = {n: self.G.nodes[n].get('label', n) for n in self.G.nodes}
-        nx.draw_networkx_labels(self.G, pos, labels, font_size=9)
+nx.draw_networkx_nodes(G, pos, node_shape="s", node_size=4000, node_color="lightblue", edgecolors="black")
 
-        edge_labels = {}
-        for u,v in self.G.edges:
-            p = self.G.edges[u,v].get('prob')
-            if p is not None: edge_labels[(u,v)] = f"p={p:.2f}"
-        if edge_labels:
-            nx.draw_networkx_edge_labels(self.G, pos, edge_labels=edge_labels, font_color='darkgreen', font_size=8)
+labels = nx.get_node_attributes(G, 'label')
+nx.draw_networkx_labels(G, pos, labels, font_size=9, font_weight="bold")
 
-        self.canvas.draw()
+edge_colors = [G[u][v]['color'] for u, v in G.edges()]
+nx.draw_networkx_edges(G, pos, edge_color=edge_colors, arrows=True, arrowsize=20, width=2)
 
-    # ---------- Save/Load ----------
-    def save_json(self):
-        if not self.G.nodes:
-            messagebox.showinfo("Сохранение", "Дерево пустое")
-            return
-        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON","*.json")])
-        if not path: return
-        data = nx.node_link_data(self.G)
-        with open(path,'w',encoding='utf-8') as f:
-            json.dump(data,f,ensure_ascii=False, indent=2)
-        messagebox.showinfo("Сохранено", f"Сохранено в {path}")
+edge_labels = nx.get_edge_attributes(G, 'label')
+filtered_edge_labels = {k: v for k, v in edge_labels.items() if v}
+nx.draw_networkx_edge_labels(G, pos, edge_labels=filtered_edge_labels, font_color="black", font_size=8)
 
-    def load_json(self):
-        path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
-        if not path:
-            return
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            # Если есть ключ edges вместо links
-            if 'links' not in data and 'edges' in data:
-                data['links'] = data.pop('edges')
-
-            # Нормализация: from/to → source/target
-            if 'links' in data:
-                normalized = []
-                for link in data['links']:
-                    l = dict(link)
-                    if 'from' in l and 'to' in l:
-                        l['source'] = l.pop('from')
-                        l['target'] = l.pop('to')
-                    normalized.append(l)
-                data['links'] = normalized
-
-            # NetworkX node_link_graph требует хотя бы пустой список links
-            if 'links' not in data:
-                data['links'] = []
-
-            # Загружаем граф
-            self.G = nx.node_link_graph(data)
-
-            # Переносим вероятности из узлов в рёбра, если родитель chance
-            for u, v in list(self.G.edges()):
-                if 'prob' not in self.G.edges[u, v]:
-                    child_prob = self.G.nodes[v].get('prob')
-                    if child_prob is not None and self.G.nodes[u].get('type') == 'chance':
-                        self.G.edges[u, v]['prob'] = child_prob
-
-            # Обновляем счетчик узлов
-            nums = []
-            for n in self.G.nodes:
-                try:
-                    part = str(n).split('_')[-1]
-                    nums.append(int(part))
-                except Exception:
-                    pass
-            self.node_counter = max(nums, default=-1) + 1
-
-            self.refresh_node_list()
-            self.draw_tree()
-            messagebox.showinfo("Загружено", f"Дерево загружено из {path}")
-
-        except Exception as e:
-            messagebox.showerror("Ошибка загрузки", str(e))
-
-
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = DecisionTreeApp(root)
-    root.mainloop()
+plt.title("Дерево решений при дополнительном исследовании рынка", fontsize=16, pad=20)
+plt.axis("off")
+plt.tight_layout()
+plt.show()
